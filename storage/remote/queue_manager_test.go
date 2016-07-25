@@ -94,7 +94,7 @@ func TestSampleDelivery(t *testing.T) {
 
 	c := &TestStorageClient{}
 	c.expectSamples(samples[:len(samples)/2])
-	m := NewStorageQueueManager(c, len(samples)/2)
+	m := NewStorageQueueManager(c, len(samples)/2, Drop)
 
 	// These should be received by the client.
 	for _, s := range samples[:len(samples)/2] {
@@ -126,7 +126,7 @@ func TestSpawnNotMoreThanMaxConcurrentSendsGoroutines(t *testing.T) {
 	}
 
 	c := NewTestBlockedStorageClient()
-	m := NewStorageQueueManager(c, n)
+	m := NewStorageQueueManager(c, n, Drop)
 
 	go m.Run()
 

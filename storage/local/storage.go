@@ -376,6 +376,52 @@ func (s *MemorySeriesStorage) Start() (err error) {
 	return nil
 }
 
+// Dump calls fn for every sample in the storage. The storage must not have
+// been started yet and is closed when Dump returns.
+func (s *MemorySeriesStorage) Dump(fn func(*model.Sample)) error {
+	s.Start()
+
+	// Stop all the storage maintenance loops - we don't want them to interfere
+	// with the dumping.
+	close(s.loopStopping)
+	<-s.loopStopped
+	close(s.quarantineStopping)
+	<-s.quarantineStopped
+	close(s.evictStopping)
+	<-s.evictStopped
+
+	dumpFP := func(fp model.Fingerprint) {
+		it := s.preloadChunksForRange(fp, model.Earliest, model.Latest)
+		vals := it.RangeValues(metric.Interval{
+			OldestInclusive: model.Earliest,
+			NewestInclusive: model.Latest,
+		})
+		m := it.Metric().Metric
+		for _, val := range vals {
+			fn(&model.Sample{
+				Metric:    m,
+				Timestamp: val.Timestamp,
+				Value:     val.Value,
+			})
+		}
+		it.Close()
+	}
+
+	fpIter := s.fpToSeries.fpIter()
+	for fp := range fpIter {
+		dumpFP(fp)
+	}
+
+	archivedFPs, err := s.persistence.fingerprintsModifiedBefore(model.Latest)
+	if err != nil {
+		return fmt.Errorf("error looking up archived series: %v", err)
+	}
+	for _, fp := range archivedFPs {
+		dumpFP(fp)
+	}
+	return nil
+}
+
 // Stop implements Storage.
 func (s *MemorySeriesStorage) Stop() error {
 	log.Info("Stopping local storage...")

@@ -42,6 +42,13 @@ const (
 	dropped = "dropped"
 )
 
+type OverflowBehavior int
+
+const (
+	Drop OverflowBehavior = iota
+	Backlog
+)
+
 // StorageClient defines an interface for sending a batch of samples to an
 // external timeseries database.
 type StorageClient interface {
@@ -54,11 +61,12 @@ type StorageClient interface {
 // StorageQueueManager manages a queue of samples to be sent to the Storage
 // indicated by the provided StorageClient.
 type StorageQueueManager struct {
-	tsdb           StorageClient
-	queue          chan *model.Sample
-	pendingSamples model.Samples
-	sendSemaphore  chan bool
-	drained        chan bool
+	tsdb             StorageClient
+	queue            chan *model.Sample
+	pendingSamples   model.Samples
+	sendSemaphore    chan bool
+	drained          chan bool
+	overflowBehavior OverflowBehavior
 
 	samplesCount  *prometheus.CounterVec
 	sendLatency   prometheus.Summary
@@ -69,16 +77,17 @@ type StorageQueueManager struct {
 }
 
 // NewStorageQueueManager builds a new StorageQueueManager.
-func NewStorageQueueManager(tsdb StorageClient, queueCapacity int) *StorageQueueManager {
+func NewStorageQueueManager(tsdb StorageClient, queueCapacity int, ob OverflowBehavior) *StorageQueueManager {
 	constLabels := prometheus.Labels{
 		"type": tsdb.Name(),
 	}
 
 	return &StorageQueueManager{
-		tsdb:          tsdb,
-		queue:         make(chan *model.Sample, queueCapacity),
-		sendSemaphore: make(chan bool, maxConcurrentSends),
-		drained:       make(chan bool),
+		tsdb:             tsdb,
+		queue:            make(chan *model.Sample, queueCapacity),
+		sendSemaphore:    make(chan bool, maxConcurrentSends),
+		drained:          make(chan bool),
+		overflowBehavior: ob,
 
 		samplesCount: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -135,11 +144,18 @@ func NewStorageQueueManager(tsdb StorageClient, queueCapacity int) *StorageQueue
 // sample on the floor if the queue is full.
 // Always returns nil.
 func (t *StorageQueueManager) Append(s *model.Sample) error {
-	select {
-	case t.queue <- s:
+	switch t.overflowBehavior {
+	case Drop:
+		select {
+		case t.queue <- s:
+		default:
+			t.samplesCount.WithLabelValues(dropped).Inc()
+			log.Warn("Remote storage queue full, discarding sample.")
+		}
+	case Backlog:
+		t.queue <- s
 	default:
-		t.samplesCount.WithLabelValues(dropped).Inc()
-		log.Warn("Remote storage queue full, discarding sample.")
+		panic("unknown overflow behavior")
 	}
 	return nil
 }

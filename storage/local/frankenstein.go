@@ -21,6 +21,14 @@ const (
 	maxChunkAge      = 30 * time.Second
 )
 
+var (
+	numSeriesDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "memory_series"),
+		"The current number of series in memory.",
+		nil, nil,
+	)
+)
+
 // Ingestor deals with "in flight" chunks.
 // Its like MemorySeriesStorage, but simpler.
 type Ingestor struct {
@@ -358,6 +366,7 @@ func (i *Ingestor) flushChunks(fp model.Fingerprint, metric model.Metric, chunks
 func (i *Ingestor) Describe(ch chan<- *prometheus.Desc) {
 	i.mapper.Describe(ch)
 
+	ch <- numSeriesDesc
 	ch <- i.ingestedSamples.Desc()
 	i.discardedSamples.Describe(ch)
 	ch <- i.storedChunks.Desc()
@@ -370,6 +379,11 @@ func (i *Ingestor) Describe(ch chan<- *prometheus.Desc) {
 func (i *Ingestor) Collect(ch chan<- prometheus.Metric) {
 	i.mapper.Collect(ch)
 
+	ch <- prometheus.MustNewConstMetric(
+		numSeriesDesc,
+		prometheus.GaugeValue,
+		float64(i.fpToSeries.length()),
+	)
 	ch <- i.ingestedSamples
 	i.discardedSamples.Collect(ch)
 	ch <- i.storedChunks
